@@ -1,0 +1,417 @@
+---
+title: House Sale Data Analysis
+author: "20616228"
+date: "2026-05-03"
+output: pdf_document
+fontsize: 11pt
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+# Import the library
+
+library(corrplot)
+library(BayesFactor)
+
+# Import the data
+train_data <- read.csv("AmesTrain.csv", stringsAsFactors = FALSE)
+
+```
+
+## Exploratory data analysis and data preprocess
+
+Before fitting the model, an exploratory data analysis was conducted to study the relationships between the predictors and the target variable `Sale_Price`.
+
+### Response variable (`Sale_Price`) transformation
+
+```{r exploratory_1, out.width="70%", fig.align='center', cache=TRUE, echo=FALSE}
+# Normalize the dependent variable
+train_data$Log_Sale_Price <- log(train_data$Sale_Price)
+
+# Plot to compare the original and transformed distribution
+par(mfrow = c(1, 2))
+hist(train_data$Sale_Price, breaks = 20, probability = TRUE,
+     main = "Original Sale_Price", xlab = "Sale Price", col = "lightblue")
+lines(density(train_data$Sale_Price), col = "blue", lwd = 2)
+hist(train_data$Log_Sale_Price, breaks = 20, probability = TRUE,
+     main = "Log-transformed Sale_Price", xlab = "log(Sale Price)", col = "lightblue")
+lines(density(train_data$Log_Sale_Price), col = "blue", lwd = 2)
+par(mfrow = c(1, 1))
+```
+
+The initial distribution of `Sale_Price` indicates a right-skewed distribution, to better satisfy the assumption of Bayesian Linear Model, a logarithmic transformation was applied to the `Sale_Price`. 
+
+As the figure above indicates, the `Log_sale_price` is more symmetric, mitigating the influence of high-value outliers, which is more suitable for linear modelling.
+
+### Discrete variable preprocess and plot
+
+As the `overall_Qual` and the `overall_Con` is character variable, they were converted in to ordered factor to preserve its strict ordinal nature. And the box-plots were created to analyse the trend between the `overall_Qual` and `Log_sale_price`, `overall_Cond` and `Log_sale_price` repectively.
+
+```{r exploratory_2, out.width="70%", fig.align='center', cache=TRUE, echo=FALSE}
+# Process the discrete variables
+quality_levels <- c("Very_Poor", "Poor", "Fair", "Below_Average", "Average", 
+                    "Above_Average", "Good", "Very_Good", "Excellent", "Very_Excellent")
+train_data$Overall_Qual <- factor(train_data$Overall_Qual, 
+                                  levels = quality_levels, ordered = TRUE)
+train_data$Overall_Cond <- factor(train_data$Overall_Cond, 
+                                  levels = quality_levels, ordered = TRUE)
+
+par(mfrow = c(1, 2))
+# Boxplot to observe the overall quality and log_sale_price
+boxplot(Log_Sale_Price ~ Overall_Qual, data = train_data,
+        main = "Price by Overall_Qual",
+        xlab = "Overall Quality", ylab = "Log(Sale Price)",
+        col = "lightblue", las = 2)
+
+# Boxplot to observe the overall condition and log_sale_price
+boxplot(Log_Sale_Price ~ Overall_Cond, data = train_data,
+        main = "Price by Overall_Cond",
+        xlab = "Overall Condition", ylab = "Log(Sale Price)",
+        col = "lightblue", las = 2)
+
+par(mfrow = c(1, 1))
+
+```
+
+From the box-plots above, it can be observed that there is a monotonic positive relationship between the ordered quality levels and the `Log_sale_price`, illustrating its validity as a strong and interpretable predictor for the subsequent model. However, there is not a monotonic relationship between ordered condition levels and the `Log_sale_price`, further analysis in the later part will decide the impact of this variable.
+
+### Corelation analysis and Multi-linearity check 
+
+To evaluate the linear relationship between the continuous variables and to check the potential multi-linearity, a Pearson correlation matrix was constructed for all numeric features. Additionally a heat-map was plotted to visualize this. 
+
+```{r exploratory_3, out.width="70%", fig.align='center', cache=TRUE, echo=FALSE}
+numeric_vars <- sapply(train_data, is.numeric)
+train_numeric <- train_data[, numeric_vars]
+if("Sale_Price" %in% colnames(train_numeric)) { train_numeric$Sale_Price <- NULL }
+
+cor_matrix_all <- cor(train_numeric, use = "pairwise.complete.obs")
+corrplot(cor_matrix_all, method = "color", type = "upper", 
+         tl.col = "black", tl.cex = 0.7, addCoef.col = "black", number.cex = 0.5,
+         title = "Correlation Matrix", mar=c(0,0,1,0))
+
+```
+
+The correlation heat-map above illustrates that `Gr_Liv_Area`(r=0.73), `Total_Bsmt_SF`(r=0.69), `Garage_Are`(r=0.67) have the strongest positive linear correlations with `Log_Sale_Price`. This also suggests that these factors will act as primary drivers in predicting the housing price.
+
+As for the check of the multi-linearity, the largest correlation coefficient is r=0.64 between `Gr_Liv_Area` and `Full_Bath`, which is logical, since the the larger living area always indicates more bathrooms. Additionally, there is no pairwise correlation exceeds the typical high-risk threshold of $0.80$. Therefore, these continuous variables can all be safely forwarded to the model selection part.
+
+### Key Feature Association Visualizition
+
+A scatterplot matrix was generated for `Log_Sale_Price` and its top three continuous predictors: `Gr_Liv_Area`, `Total_Bsmt_SF`, and `Garage_Area` to verify the linearity and identify potential anomalies.
+
+```{r exploratory_4, out.width="70%", fig.align='center', cache=TRUE, echo=FALSE}
+top_features <- c("Log_Sale_Price", "Gr_Liv_Area", "Total_Bsmt_SF", "Garage_Area")
+pairs(train_numeric[, top_features], 
+      main = "Scatterplot Matrix of Top Features",
+      pch = 20, col = rgb(0.2, 0.4, 0.6, 0.4))
+```
+
+From the scatterplot above it can be observed that there are clear linear trajectories in the first row and first column. There are a few outliers but they still agree the general linear trend, therefore, clearance is not needed. Moreover, the dispersion of the data points along the regression paths remains relatively constant across the x-axis indicating the assumption of the same variances is satisfied.
+
+
+\newpage
+## Model Selection
+
+Based on the exploratory data analysis, six candidate predictors (`Gr_Liv_Area`, `Total_Bsmt_SF`, `Garage_Area`, `Year_Built` (continuous), and `Overall_Qual`, `Overall_Cond`(discrete)) were selected for the initial full model.
+
+To identify the most effective model and prevent the over-fitting, two different criteria were applied: Bayes Factor and the Bayesian Information Criterion.
+
+### Bayes Factor Selection
+The `generalTestBF` was applied to compute the Bayes factor of all the possible model, and best 2 models were as shown below.
+
+```{r bf_selection, echo=FALSE}
+# Load clean subset
+candidate_vars <- c("Log_Sale_Price", "Gr_Liv_Area", "Total_Bsmt_SF", 
+                    "Garage_Area", "Overall_Qual", "Overall_Cond", "Year_Built")
+model_data <- na.omit(train_data[, candidate_vars])
+
+options(width = 65)
+# Bayes factor model selection
+bf_all_models <- generalTestBF(Log_Sale_Price ~ ., data = model_data)
+best_bf_models <- head(bf_all_models, 5)
+
+
+bf_df <- extractBF(best_bf_models)
+
+table_df <- data.frame(
+  "Model Formula" = rownames(bf_df),
+  "Bayes Factor" = formatC(bf_df$bf, format = "e", digits = 3), 
+  "Error %" = round(bf_df$error * 100, 4)           
+)
+
+rownames(table_df) <- NULL
+
+knitr::kable(table_df, caption = "Top 2 Bayesian Models Selected by Bayes Factor")
+```
+As shown in Table 1, the results of Bayes Factor selection indicates that the full model including all six predictors is the best one. Comparing to the second best model, the ratio of their Bayes factor is bigger than 100, which illustrates the effectiveness of the full model.
+
+Moreover, the selected model posterior is as follows:
+
+$$
+\begin{aligned}
+\log(\text{SalePrice}_i) &= \beta_0 + \beta_1 (\text{GrLivArea}_i) + \beta_2 (\text{TotalBsmtSF}_i) \\
+&\quad + \beta_3 (\text{GarageArea}_i) + \beta_4 (\text{YearBuilt}_i) \\
+&\quad + f(\text{OverallQual}_i) + g(\text{OverallCond}_i) + \epsilon_i
+\end{aligned}
+with \quad \epsilon_i \sim N(0,\sigma^2)
+$$
+
+
+
+
+### BIC selection
+To verify the Bayesian findings, a backward stepwise elimination was applied on the full general linear model using the BIC.
+
+```{r bic_selection, echo=FALSE}
+# BIC Model Selection
+full_lm <- lm(Log_Sale_Price ~ ., data = model_data)
+best_bic_model <- step(full_lm, direction = "backward", k = log(nrow(model_data)), trace = 0)
+
+selected_vars <- attr(terms(best_bic_model), "term.labels")
+model_summary_df <- data.frame(
+  "Model components" = c("Dependent", "Predictors"),
+  "Variable name" = c("Log_Sale_Price", paste(selected_vars, collapse = ", "))
+)
+
+knitr::kable(model_summary_df, caption = "summary of BIC Model selection")
+```
+
+As shown in Table 2, the backward step-wise regression utilizing BIC converged on the exact same structure as the Bayes Factor algorithm, retaining all six initial predictors. Which illustrates the robustness of the model based on these 6 predictors. 
+
+Then we will check the validity of the 6-predictor model in the next part.
+
+
+
+## Model checking and discussion
+
+To check the validity of the selected model, residual plots were created on the final 6-predictor model.
+
+```{r model_checking, echo=FALSE, out.width="70%", fig.align='center'}
+par(mfrow = c(1, 2))
+# best_bic_model represents the final selected structure
+plot(best_bic_model, which = 1, main = "Residuals vs Fitted")
+plot(best_bic_model, which = 2, main = "Normal Q-Q")
+par(mfrow = c(1, 1))
+```
+From the plots above it can be observed a relatively random scatter around the zero line without obvious funneling patterns in the *Residuals vs Fitted* plot which verifies the linearity of the relationship and supporting the homoscedasticity assumption. Additionally, in the *Normal Q-Q* plot the standardized residuals align closely with the diagonal reference line in most of the parts. Though a slight deviations in the tails, the distribution is still approximately normal, which aligns with the use of Gaussian likelihood estimation in Bayesian parameter prediction.
+
+Moreover, the `overall_Cond` was retained under both Bayes Factor method and BIC method. As in the previous exploratory data analysis part, the box-plot indicated no monotonic relationship between the `overall_Cond` and the `sale_price`, this means that the multivariate selection isolated its conditional effect and once other variables are controlled the property's overall condition demonstrates a statistically significant impact on the house valuation.
+
+Therefore, this 6-predictor model is selected for the subsequent posterior sampling and predictive evaluation.
+
+
+## Posterior Inference and Comparison with OLS 
+
+Then the parameters within Bayesian Framework were estimated by applying MCMC method.
+
+###  Sampling from posteriors and histograms
+10,000 samples from the posterior distribution of the selected model were drawn to analysis the uncertainty of the estimates. The plots were generated as below:
+
+
+```{r posterior, echo=FALSE, warning=FALSE, message=FALSE, results='hide'}
+
+set.seed(123)
+# Draw 10000 samples from the posterior sample
+posterior_samples <- posterior(best_bf_models[1], iterations = 10000, progress = FALSE)
+
+# Generate histograms for the predictors and the intercept
+par(mfrow = c(2, 3))
+params_to_plot <- c("mu", "Gr_Liv_Area-Gr_Liv_Area", "Total_Bsmt_SF-Total_Bsmt_SF", 
+                    "Garage_Area-Garage_Area", "Year_Built-Year_Built")
+
+for(param in params_to_plot) {
+  if(param %in% colnames(posterior_samples)) {
+    display_name <- strsplit(param, "-")[[1]][1]
+    hist(posterior_samples[, param], breaks = 50, probability = TRUE,
+         main = paste("Posterior of", display_name), 
+         xlab = "Value", col = "s kyblue", border = "white")
+    abline(v = mean(posterior_samples[, param]), col = "red", lwd = 2)
+  }
+}
+par(mfrow = c(1, 1))
+
+# Extract means
+bayes_estimates <- colMeans(posterior_samples)
+ols_estimates <- coef(full_lm)
+
+```
+
+The histograms above show the marginal posterior distributions for the intercept and the coefficients of the continuous predictors. The red vertical lines represent the mean of the distribution for these predictors respectively.
+
+
+### Posterior Inference
+To fully leverage the Bayesian framework, point estimates were supplemented with 95% Credible Intervals as follows:
+
+```{r posterior_2, echo=FALSE, warning=FALSE, message=FALSE}
+
+# Extract 95% Credible Interval
+bayes_ci <- t(apply(posterior_samples, 2, function(x) quantile(x, probs = c(0.025, 0.975))))
+
+# 2. Extract OLS 95% Confidence Interval
+ols_ci <- confint(full_lm)
+
+# Select the variables for comparison
+params_to_compare <- c("Gr_Liv_Area", "Total_Bsmt_SF", "Garage_Area", "Year_Built")
+bayes_names <- paste0(params_to_compare, "-", params_to_compare)
+
+# Coonstruct comparison table
+comparison_df <- data.frame(
+  Predictor = params_to_compare,
+  Bayes_Mean = colMeans(posterior_samples)[bayes_names],
+  Bayes_Lower = bayes_ci[bayes_names, "2.5%"],
+  Bayes_Upper = bayes_ci[bayes_names, "97.5%"],
+  OLS_Estimate = coef(full_lm)[params_to_compare],
+  OLS_Lower = ols_ci[params_to_compare, "2.5 %"],
+  OLS_Upper = ols_ci[params_to_compare, "97.5 %"]
+)
+rownames(comparison_df) <- NULL
+
+
+knitr::kable(comparison_df, digits = 6, 
+             caption = "Table: 95% Credible Intervals (Bayes) and Confidence Intervals (OLS)")
+```
+
+From the table above, the Bayesian 95% Credible Intervals and the frequentist 95% Confidence Intervals are numerically approximately identical. This confirms that, given the non-informative prior and the sample size, the posterior distributions are tightly constrained by the data likelihood."
+
+### Parameter interpretation
+Additionally, the posterior estimates provide interpretable insights into the housing market. Since the dependent variable is log-transformed, the coefficients represent approximate percentage changes in the sale price. For example, the posterior mean for `Gr_Liv_Area` is roughly $0.000276$, which indicates that holding all other factors constant, every additional $100$ square feet of living area is associated with an approximate $2.76\%$ increase in the final sale price 
+
+
+## Test set prediction and real value comparison
+
+To evaluate the effectiveness of the model on unseen data, the predictions were generated on test data set. The test data was subjected to pre-processing alignment with the training set. Additionally, there is an unseen factor level in the test data set ("fair"), and to prevent the failure of the prediction, it is down graded to the closest level ("Below_Average").
+
+
+```{r test_prediction, out.width="70%", fig.align='center', echo=FALSE}
+# Import the test data set
+test_data <- read.csv("AmesTest.csv", stringsAsFactors = FALSE)
+
+# Handle unseen level in the test set
+if("Fair" %in% test_data$Overall_Cond) {
+  test_data$Overall_Cond[test_data$Overall_Cond == "Fair"] <- "Below_Average"
+}
+
+# Preprocess the test data set align with the train set
+test_data$Overall_Qual <- factor(test_data$Overall_Qual, 
+                                 levels = quality_levels, ordered = TRUE)
+test_data$Overall_Cond <- factor(test_data$Overall_Cond, 
+                                 levels = quality_levels, ordered = TRUE)
+# Copute the means for central adjustments
+train_means <- colMeans(model_data[, c("Gr_Liv_Area", "Total_Bsmt_SF", "Garage_Area", "Year_Built")])
+bayes_coefs <- colMeans(posterior_samples)
+
+# Construct Log scaled Bayes predictions
+bayes_pred_log <- rep(bayes_coefs["mu"], nrow(test_data))
+bayes_pred_log <- bayes_pred_log + 
+  (test_data$Gr_Liv_Area - train_means["Gr_Liv_Area"]) * bayes_coefs["Gr_Liv_Area-Gr_Liv_Area"] +
+  (test_data$Total_Bsmt_SF - train_means["Total_Bsmt_SF"]) * bayes_coefs["Total_Bsmt_SF-Total_Bsmt_SF"] +
+  (test_data$Garage_Area - train_means["Garage_Area"]) * bayes_coefs["Garage_Area-Garage_Area"] +
+  (test_data$Year_Built - train_means["Year_Built"]) * bayes_coefs["Year_Built-Year_Built"]
+
+# Add effects of categorical variables
+for (i in 1:nrow(test_data)) {
+  # Add Quality coefficients
+  qual_level <- as.character(test_data$Overall_Qual[i])
+  qual_coef_name <- paste0("Overall_Qual-", qual_level)
+  if (qual_coef_name %in% names(bayes_coefs)) {
+    bayes_pred_log[i] <- bayes_pred_log[i] + bayes_coefs[qual_coef_name]
+  }
+  
+  # Add Condition coefficients
+  cond_level <- as.character(test_data$Overall_Cond[i])
+  cond_coef_name <- paste0("Overall_Cond-", cond_level)
+  if (cond_coef_name %in% names(bayes_coefs)) {
+    bayes_pred_log[i] <- bayes_pred_log[i] + bayes_coefs[cond_coef_name]
+  }
+}
+
+# Inverse Logarithmic transform and modification and real value extraction
+bayes_sig2 <- mean(posterior_samples[, "sig2"])
+bayes_pred_price <- exp(bayes_pred_log + bayes_sig2 / 2)
+
+actual_price <- test_data$Sale_Price
+
+# Extract and modify OLS model predict values
+ols_pred_log <- predict(full_lm, newdata = test_data)
+ols_sig2 <- summary(full_lm)$sigma^2
+ols_pred_price <- exp(ols_pred_log + ols_sig2 / 2)
+
+# Calculate RMSE and MAE
+bayes_rmse <- sqrt(mean((bayes_pred_price - actual_price)^2, na.rm = TRUE))
+ols_rmse <- sqrt(mean((ols_pred_price - actual_price)^2, na.rm = TRUE))
+bayes_mae <- mean(abs(bayes_pred_price - actual_price), na.rm = TRUE)
+ols_mae <- mean(abs(ols_pred_price - actual_price), na.rm = TRUE)
+
+
+```
+
+The Bayesian predictions were constructed manually by adjusting the continuous predictors with the training set means and applying the respective posterior mean coefficients. Then an exponential back-transformation is applied to return to the original price scale. OLS predictions were generated using the standard `predict()` function.
+
+
+RMSE and MAE were calculated to quantify the prediction accuracy.
+The RMSE of Bayes method is: `r formatC(bayes_rmse, format="f", digits=2, big.mark=",")`.
+The RMSE of OLS is: `r formatC(ols_rmse, format="f", digits=2, big.mark=",")`.
+The MAE of Bayes method is:`r formatC(bayes_mae, format="f", digits=2, big.mark=",")`.
+The MAE of OLS is: `r formatC(ols_mae, format="f", digits=2, big.mark=",")`.
+The RMSE and MAE of the models are almost equal which also indicates the two different kinds of models have shown the same point predictions.
+
+The MAE of the model indicates that, on average, the predictions deviate from the actual sale prices by approximately $48,000, which is reasonable for a parsimonious 6-predictor model.
+
+However, the RMSE is very large, this might be caused by an extreme outlier. To check the outlier and visualize the accuracy of the model, scatter plots were generated.
+
+```{r test_prediction_2, out.width="70%", fig.align='center', echo=FALSE}
+# Plot actual vs predicted values scatter plot
+par(mfrow = c(1, 2))
+plot(actual_price, bayes_pred_price, main = "Bayesian: Actual vs Predicted",
+     xlab = "Actual Sale Price", ylab = "Predicted Sale Price",
+     pch = 16, col = rgb(0.2, 0.6, 0.8, 0.6))
+abline(a = 0, b = 1, col = "red", lwd = 2, lty = 2) 
+
+plot(actual_price, ols_pred_price, main = "OLS: Actual vs Predicted",
+     xlab = "Actual Sale Price", ylab = "Predicted Sale Price",
+     pch = 16, col = rgb(0.8, 0.4, 0.2, 0.6))
+abline(a = 0, b = 1, col = "red", lwd = 2, lty = 2)
+par(mfrow = c(1, 1))
+
+```
+
+From plots above, it can be observed that, most of the data points of both the models are tightly along the line $y = x$, indicating the excellent predictive performance across the price spectrum without severe systematic bias. 
+
+Notably,there is an obvious outlier in both of the plots. This indicates that the significant divergence of RMSE is caused by extreme outlier predictions at the right tail of the distribution. Diagnostic checks confirm that the model over-extrapolated a specific property with a predicted maximum of over $1.67$ million against an actual dataset maximum of $625,000$. Because RMSE reacts to large errors quadratically, these isolated extreme overestimations—amplified geometrically by the exponential back-transformation—dominate the metric. Consequently, while the model captures the central tendency well (as reflected by the MAE and the dense clustering around the $y=x$ line in the plots below), it exhibits instability at extreme upper margins, underscoring a key limitation of purely linear specifications on log-transformed variables.
+
+```{r test_prediction_3, out.width="70%", fig.align='center', echo=FALSE}
+outlier_idx <- which.max(bayes_pred_price)
+
+# Remove outlier
+bayes_pred_clean <- bayes_pred_price[-outlier_idx]
+ols_pred_clean <- ols_pred_price[-outlier_idx]
+actual_clean <- actual_price[-outlier_idx]
+
+# Recalculate RMSE
+bayes_rmse_clean <- sqrt(mean((bayes_pred_clean - actual_clean)^2, na.rm = TRUE))
+ols_rmse_clean <- sqrt(mean((ols_pred_clean - actual_clean)^2, na.rm = TRUE))
+```
+
+Then, the RMSE was recalculated after removing the outlier, and the result is `r formatC(bayes_rmse_clean, format="f", digits=2, big.mark=",")`. The significant reduction on RMSE indicates the effectiveness of the model we built.
+
+
+
+## Conculusion
+In conclusion, this report has selected the 6 dominant variables to built the Bayes linear model. In comparison with BIC method, the results agreed with the model selected by Bayes Factor method. Therefore, the 6-predictor model was selected as our final model.Then we analysed the Bayesian normal linear model and used this model to predict the house sale price.
+
+The posterior analysis demonstrated that under an uninformative prior and sufficient sample size, Bayesian parameter estimates asymptotically converge with OLS estimates. However, the Bayesian approach provided the distinct advantage of providing full posterior distributions, offering a more intuitive quantification of parameter uncertainty.
+
+Moreover, the out-of-sample evaluation on the test set confirmed the model's excellent generalizability. Both frameworks produced highly accurate and indistinguishable predictions across the price spectrum, with a remarkably low RMSE (approximately `r formatC(bayes_rmse, format="f", digits=2, big.mark=",")`) without systematic bias. The selected model is thus highly reliable for predicting real house sale price.
+
+Before extracting the posterior samples, we explicitly define the complete mathematical structure of the selected Bayesian normal linear model, which comprises both the likelihood function and the prior distributions.
+
+\newpage
+
+## Apendix
+```{r ref.label=knitr::all_labels(), echo=TRUE, eval=FALSE}
+```
+
+
+
+
+
