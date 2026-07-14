@@ -1,6 +1,6 @@
 ---
 title: House Sale Data Analysis
-author: "20616228"
+author: "Charlee"
 date: "2026-05-03"
 output: pdf_document
 fontsize: 11pt
