@@ -13,9 +13,9 @@ library(corrplot)
 library(BayesFactor)
 
 # ------------------------------------------------------------------------------
-# 第一部分 (Part A)：探索性数据分析 (EDA) 与预处理
+# 第一部分 (Part A)：EDA and preprocess
 # ------------------------------------------------------------------------------
-cat("\n==================== [Part A] EDA与预处理 ====================\n")
+cat("\n==================== [Part A] EDA and preprocess ====================\n")
 
 # 1. 加载训练集数据
 train_data <- read.csv("AmesTrain.csv", stringsAsFactors = FALSE)
@@ -77,7 +77,7 @@ pairs(train_numeric[, top_features],
 # ------------------------------------------------------------------------------
 # 第二部分 (Part A)：模型拟合与选择 (Model Fitting & Selection)
 # ------------------------------------------------------------------------------
-cat("\n==================== [Part A] 模型拟合与选择 ====================\n")
+cat("\n==================== [Part A] model fitting and selection ====================\n")
 
 # 1. 准备干净的建模子集
 candidate_vars <- c("Log_Sale_Price", "Gr_Liv_Area", "Total_Bsmt_SF", 
@@ -102,7 +102,7 @@ print(summary(best_bic_model))
 # ------------------------------------------------------------------------------
 # 第三部分 (Part B)：后验分析与 OLS 对比 (Posterior Analysis & OLS)
 # ------------------------------------------------------------------------------
-cat("\n==================== [Part B] 后验分析与预测 ====================\n")
+cat("\n==================== [Part B] posterior analysis and prediction ====================\n")
 
 # 1. 从最佳贝叶斯模型中抽取后验样本
 set.seed(123)
@@ -134,19 +134,19 @@ print(round(ols_estimates, 6))
 
 
 # ==============================================================================
-# 第四部分 (Part B)：测试集预测与评估 (Test Set Prediction) - 最终修正版
+# 第四部分 (Part B)：测试集预测与评估 (Test Set Prediction)
 # ==============================================================================
 
 # 1. 严格对齐测试集的预处理
 test_data <- read.csv("AmesTest.csv", stringsAsFactors = FALSE)
 
-# 【关键修复 1】：处理训练集中未出现的 "Fair" 等级
+# 处理训练集中未出现的 "Fair" 等级
 # 将测试集中 Overall_Cond 为 "Fair" 的房屋，强制降级为 "Below_Average"，防止 OLS 预测崩溃
 if("Fair" %in% test_data$Overall_Cond) {
   test_data$Overall_Cond[test_data$Overall_Cond == "Fair"] <- "Below_Average"
 }
 
-# 必须与训练集保持绝对一致
+# 变量转换与训练集保持绝对一致
 test_data$Overall_Qual <- factor(test_data$Overall_Qual, 
                                  levels = quality_levels, ordered = TRUE)
 test_data$Overall_Cond <- factor(test_data$Overall_Cond, 
@@ -164,7 +164,7 @@ bayes_pred_log <- bayes_pred_log +
   (test_data$Garage_Area - train_means["Garage_Area"]) * bayes_coefs["Garage_Area-Garage_Area"] +
   (test_data$Year_Built - train_means["Year_Built"]) * bayes_coefs["Year_Built-Year_Built"]
 
-# 【关键修复 2】：同时叠加 Overall_Qual 和 Overall_Cond 两个分类变量的效应
+# 关键修复 2：同时叠加 Overall_Qual 和 Overall_Cond 两个分类变量的效应
 for (i in 1:nrow(test_data)) {
   # 叠加 Quality 系数
   qual_level <- as.character(test_data$Overall_Qual[i])
